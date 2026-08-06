@@ -25,49 +25,52 @@ def get_live_rates():
     global _last_update, _cached_rates
     current_time = time.time()
     
-    # آپدیت هر ۶۰ ثانیه یک‌بار
+    # به‌روزرسانی هر ۶۰ ثانیه یک‌بار
     if current_time - _last_update < 60 and _last_update != 0:
         return _cached_rates
 
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    # 1️⃣ تلاش برای دریافت از نوبیتکس
+    # ۱. دریافت نرخ لحظه‌ای تتر (USDT) به تومان از نوبیتکس
+    usdt_toman = _cached_rates["USDT"]
     try:
-        url = "https://api.nobitex.ir/market/stats"
-        res = requests.get(url, headers=headers, timeout=4).json()
-        if res.get('status') == 'ok' and 'stats' in res:
-            stats = res['stats']
-            if 'usdt-irt' in stats and stats['usdt-irt'].get('latest'):
-                _cached_rates["USDT"] = int(float(stats['usdt-irt']['latest']) / 10)
-            if 'trx-irt' in stats and stats['trx-irt'].get('latest'):
-                _cached_rates["TRX"] = int(float(stats['trx-irt']['latest']) / 10)
-            if 'ton-irt' in stats and stats['ton-irt'].get('latest'):
-                _cached_rates["TON"] = int(float(stats['ton-irt']['latest']) / 10)
+        res = requests.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", headers=headers, timeout=5).json()
+        if res.get('status') == 'ok' and 'bids' in res:
+            usdt_toman = float(res['bids'][0][0]) / 10  # تبدیل ریال به تومان
+    except Exception as e:
+        print(f"Nobitex USDT Error: {e}")
+
+    # ۲. دریافت نرخ دلار جهانی TRX و TON از CoinGecko
+    try:
+        url = "https://api.coingecko.com/api/v3/simple/price?ids=tron,the-open-network&vs_currencies=usd"
+        res = requests.get(url, headers=headers, timeout=5).json()
+        
+        trx_usd = float(res['tron']['usd'])
+        ton_usd = float(res['the-open-network']['usd'])
+
+        # محاسبه قیمت تومانی بر اساس نرخ زنده تتر
+        _cached_rates["USDT"] = int(usdt_toman)
+        _cached_rates["TRX"] = int(trx_usd * usdt_toman)
+        _cached_rates["TON"] = int(ton_usd * usdt_toman)
+        _last_update = current_time
+
+    except Exception as e:
+        print(f"CoinGecko API Error: {e}")
+        # در صورت خطا در CoinGecko، تلاش مجدد از طریق Binance API بدون تحریم
+        try:
+            trx_res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=TRXUSDT", headers=headers, timeout=3).json()
+            ton_res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT", headers=headers, timeout=3).json()
             
-            _last_update = current_time
-            return _cached_rates
-    except Exception as e:
-        print(f"Nobitex API Error: {e}")
+            trx_usd = float(trx_res['price'])
+            ton_usd = float(ton_res['price'])
 
-    # 2️⃣ اگر نوبیتکس خطا داد، دریافت از والکس (جایگزین پشتیبان)
-    try:
-        url = "https://api.wallex.ir/v1/currencies/stats"
-        res = requests.get(url, headers=headers, timeout=4).json()
-        if res.get('success') and 'result' in res:
-            result = res['result']
-            for item in result:
-                if item['key'] == 'USDT':
-                    _cached_rates["USDT"] = int(float(item['price']))
-                elif item['key'] == 'TRX':
-                    _cached_rates["TRX"] = int(float(item['price']))
-                elif item['key'] == 'TON':
-                    _cached_rates["TON"] = int(float(item['price']))
-
+            _cached_rates["USDT"] = int(usdt_toman)
+            _cached_rates["TRX"] = int(trx_usd * usdt_toman)
+            _cached_rates["TON"] = int(ton_usd * usdt_toman)
             _last_update = current_time
-            return _cached_rates
-    except Exception as e:
-        print(f"Wallex API Error: {e}")
+        except Exception as ex:
+            print(f"Fallback Binance Error: {ex}")
 
     return _cached_rates
