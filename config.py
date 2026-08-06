@@ -25,27 +25,49 @@ def get_live_rates():
     global _last_update, _cached_rates
     current_time = time.time()
     
-    # کش به مدت ۳ دقیقه (۱۸۰ ثانیه) - جهت جلوگیری از بن شدن IP
-    if current_time - _last_update < 180 and _last_update != 0:
+    # آپدیت هر ۶۰ ثانیه یک‌بار
+    if current_time - _last_update < 60 and _last_update != 0:
         return _cached_rates
 
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'
+    }
+
+    # 1️⃣ تلاش برای دریافت از نوبیتکس
     try:
-        # دریافت یکجای آخرین قیمت تمام ارزها از API نوبیتکس
-        response = requests.get("https://api.nobitex.ir/v2/orderbook/all", timeout=5).json()
-        
-        if response.get('status') == 'ok':
-            # دریافت قیمت خرید تتر، ترون و تون به تومان (تبدیل ریال به تومان)
-            usdt_toman = float(response['USDTIRT']['bids'][0][0]) / 10
-            trx_toman = float(response['TRXIRT']['bids'][0][0]) / 10
-            ton_toman = float(response['TONIRT']['bids'][0][0]) / 10
-
-            _cached_rates["USDT"] = int(usdt_toman)
-            _cached_rates["TRX"] = int(trx_toman)
-            _cached_rates["TON"] = int(ton_toman)
+        url = "https://api.nobitex.ir/market/stats"
+        res = requests.get(url, headers=headers, timeout=4).json()
+        if res.get('status') == 'ok' and 'stats' in res:
+            stats = res['stats']
+            if 'usdt-irt' in stats and stats['usdt-irt'].get('latest'):
+                _cached_rates["USDT"] = int(float(stats['usdt-irt']['latest']) / 10)
+            if 'trx-irt' in stats and stats['trx-irt'].get('latest'):
+                _cached_rates["TRX"] = int(float(stats['trx-irt']['latest']) / 10)
+            if 'ton-irt' in stats and stats['ton-irt'].get('latest'):
+                _cached_rates["TON"] = int(float(stats['ton-irt']['latest']) / 10)
+            
             _last_update = current_time
-
+            return _cached_rates
     except Exception as e:
-        print(f"خطا در دریافت نرخ ارز: {e}")
-        # در صورت خطا یا قطع بودن اینترنت، از آخرین قیمت ثبت‌شده در حافظه استفاده می‌شود
+        print(f"Nobitex API Error: {e}")
+
+    # 2️⃣ اگر نوبیتکس خطا داد، دریافت از والکس (جایگزین پشتیبان)
+    try:
+        url = "https://api.wallex.ir/v1/currencies/stats"
+        res = requests.get(url, headers=headers, timeout=4).json()
+        if res.get('success') and 'result' in res:
+            result = res['result']
+            for item in result:
+                if item['key'] == 'USDT':
+                    _cached_rates["USDT"] = int(float(item['price']))
+                elif item['key'] == 'TRX':
+                    _cached_rates["TRX"] = int(float(item['price']))
+                elif item['key'] == 'TON':
+                    _cached_rates["TON"] = int(float(item['price']))
+
+            _last_update = current_time
+            return _cached_rates
+    except Exception as e:
+        print(f"Wallex API Error: {e}")
 
     return _cached_rates
