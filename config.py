@@ -25,52 +25,29 @@ def get_live_rates():
     global _last_update, _cached_rates
     current_time = time.time()
     
-    # به‌روزرسانی هر ۶۰ ثانیه یک‌بار
-    if current_time - _last_update < 60 and _last_update != 0:
+    # به‌روزرسانی هر ۳۰ ثانیه یک‌بار
+    if current_time - _last_update < 30 and _last_update != 0:
         return _cached_rates
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    # ۱. دریافت نرخ لحظه‌ای تتر (USDT) به تومان از نوبیتکس
-    usdt_toman = _cached_rates["USDT"]
-    try:
-        res = requests.get("https://api.nobitex.ir/v2/orderbook/USDTIRT", headers=headers, timeout=5).json()
-        if res.get('status') == 'ok' and 'bids' in res:
-            usdt_toman = float(res['bids'][0][0]) / 10  # تبدیل ریال به تومان
-    except Exception as e:
-        print(f"Nobitex USDT Error: {e}")
+    pairs = {
+        "USDT": "https://api.nobitex.ir/v2/orderbook/USDTIRT",
+        "TRX": "https://api.nobitex.ir/v2/orderbook/TRXIRT",
+        "TON": "https://api.nobitex.ir/v2/orderbook/TONIRT"
+    }
 
-    # ۲. دریافت نرخ دلار جهانی TRX و TON از CoinGecko
-    try:
-        url = "https://api.coingecko.com/api/v3/simple/price?ids=tron,the-open-network&vs_currencies=usd"
-        res = requests.get(url, headers=headers, timeout=5).json()
-        
-        trx_usd = float(res['tron']['usd'])
-        ton_usd = float(res['the-open-network']['usd'])
-
-        # محاسبه قیمت تومانی بر اساس نرخ زنده تتر
-        _cached_rates["USDT"] = int(usdt_toman)
-        _cached_rates["TRX"] = int(trx_usd * usdt_toman)
-        _cached_rates["TON"] = int(ton_usd * usdt_toman)
-        _last_update = current_time
-
-    except Exception as e:
-        print(f"CoinGecko API Error: {e}")
-        # در صورت خطا در CoinGecko، تلاش مجدد از طریق Binance API بدون تحریم
+    for coin, url in pairs.items():
         try:
-            trx_res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=TRXUSDT", headers=headers, timeout=3).json()
-            ton_res = requests.get("https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT", headers=headers, timeout=3).json()
-            
-            trx_usd = float(trx_res['price'])
-            ton_usd = float(ton_res['price'])
+            res = requests.get(url, headers=headers, timeout=3).json()
+            if res.get('status') == 'ok' and 'bids' in res and len(res['bids']) > 0:
+                # قیمت خرید زنده از فروشندگان به ریال (تقسیم بر ۱۰ برای تبدیل به تومان)
+                price_toman = int(float(res['bids'][0][0]) / 10)
+                _cached_rates[coin] = price_toman
+        except Exception as e:
+            print(f"Error fetching {coin}: {e}")
 
-            _cached_rates["USDT"] = int(usdt_toman)
-            _cached_rates["TRX"] = int(trx_usd * usdt_toman)
-            _cached_rates["TON"] = int(ton_usd * usdt_toman)
-            _last_update = current_time
-        except Exception as ex:
-            print(f"Fallback Binance Error: {ex}")
-
+    _last_update = current_time
     return _cached_rates
