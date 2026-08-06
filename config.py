@@ -16,7 +16,7 @@ DAILY_BONUS_AMOUNT = 20000    # میزان بونوس روزانه به توما
 MIN_BET_AMOUNT = 10000        # حداقل مبلغ شرط‌بندی به تومان
 
 _last_update = 0
-_cached_rates = {"USDT": 90000, "TRX": 25000, "TON": 250000}
+_cached_rates = {"USDT": 188000, "TRX": 25000, "TON": 250000}
 
 def fetch_nobitex():
     """صرافی ۱: نوبیتکس"""
