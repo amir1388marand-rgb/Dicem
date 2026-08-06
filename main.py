@@ -1,4 +1,3 @@
-# main.py
 import asyncio
 from datetime import date
 from aiogram import Bot, Dispatcher, F, types
@@ -17,7 +16,8 @@ dp = Dispatcher()
 class Form(StatesGroup):
     waiting_for_deposit_proof = State()
     waiting_for_deposit_amount = State()
-    waiting_for_withdraw_details = State()
+    waiting_for_withdraw_amount = State()      # مرحله ۱: دریافت مبلغ برداشت
+    waiting_for_withdraw_details = State()     # مرحله ۲: دریافت آدرس/شماره کارت
 
 class GameState(StatesGroup):
     waiting_for_exact_num = State()
@@ -423,25 +423,126 @@ async def reject_dep(callback: types.CallbackQuery):
     await callback.message.answer(f"❌ تراکنش #{trans_id} رد شد.")
     await bot.send_message(int(target_uid), "❌ درخواست شارژ شما رد شد. در صورت نیاز با پشتیبانی تماس بگیرید.")
 
+# --- بخش برداشت وجه (آپدیت شده و حرفه‌ای) ---
+MIN_WITHDRAW_AMOUNT = 1000000  # حداقل برداشت: ۱ میلیون تومان
+
 @dp.message(F.text == "📤 برداشت وجه")
 async def withdraw_start(message: types.Message):
     user = db.get_user(message.from_user.id, message.from_user.username)
-    await message.answer(f"موجودی فعلی: **{user[2]:,} تومان**\nروش برداشت را انتخاب کنید:", reply_markup=kb.withdraw_keyboard(), parse_mode="Markdown")
+    if user[2] < MIN_WITHDRAW_AMOUNT:
+        await message.answer(
+            f"❌ **امکان برداشت وجود ندارد.**\n\n"
+            f"💵 حداقل مبلغ جهت برداشت **{MIN_WITHDRAW_AMOUNT:,} تومان** است.\n"
+            f"💰 موجودی فعلی شما: **{user[2]:,} تومان**",
+            parse_mode="Markdown"
+        )
+        return
+
+    await message.answer(
+        f"💰 موجودی فعلی: **{user[2]:,} تومان**\n\n"
+        f"لطفاً روش برداشت را انتخاب کنید:", 
+        reply_markup=kb.withdraw_keyboard(), 
+        parse_mode="Markdown"
+    )
 
 @dp.callback_query(F.data.startswith("wth_"))
-async def process_wth(callback: types.CallbackQuery, state: FSMContext):
+async def process_wth_method(callback: types.CallbackQuery, state: FSMContext):
     method = callback.data.split("_")[1]
     await state.update_data(wth_method=method)
-    await callback.message.answer(f"اطلاعات حساب/ولت و مبلغ برداشت ({method}) را ارسال کنید:")
-    await state.set_state(Form.waiting_for_withdraw_details)
+    
+    await callback.message.answer(
+        f"💵 لطفاً **مبلغ برداشت** را به تومان وارد کنید:\n"
+        f"⚠️ حداقل مبلغ برداشت: **{MIN_WITHDRAW_AMOUNT:,} تومان**",
+        parse_mode="Markdown"
+    )
+    await state.set_state(Form.waiting_for_withdraw_amount)
+
+@dp.message(Form.waiting_for_withdraw_amount)
+async def process_wth_amount(message: types.Message, state: FSMContext):
+    try:
+        amount = float(message.text.strip())
+        user = db.get_user(message.from_user.id, message.from_user.username)
+
+        if amount < MIN_WITHDRAW_AMOUNT:
+            await message.answer(f"❌ مبلغ وارد شده کمتر از حداقل برداشت ({MIN_WITHDRAW_AMOUNT:,} تومان) است. دوباره وارد کنید:")
+            return
+
+        if amount > user[2]:
+            await message.answer(f"❌ مبلغ وارد شده بیشتر از موجودی شما ({user[2]:,} تومان) است. دوباره وارد کنید:")
+            return
+
+        await state.update_data(wth_amount=amount)
+
+        data = await state.get_data()
+        method = data['wth_method']
+
+        if method.lower() in ["card", "کارت"]:
+            prompt_text = "💳 لطفاً **شماره کارت ۱۶ رقمی** خود را ارسال کنید:"
+        else:
+            prompt_text = "🌐 لطفاً **آدرس کیف پول** خود را ارسال کنید:"
+
+        await message.answer(prompt_text, parse_mode="Markdown")
+        await state.set_state(Form.waiting_for_withdraw_details)
+
+    except ValueError:
+        await message.answer("❌ لطفاً مبلغ را به صورت عددی و به انگلیسی وارد کنید.")
 
 @dp.message(Form.waiting_for_withdraw_details)
 async def process_wth_details(message: types.Message, state: FSMContext):
+    details = message.text.strip()
     data = await state.get_data()
-    db.add_transaction(message.from_user.id, "Withdraw", 0, data['wth_method'])
-    await bot.send_message(config.ADMIN_ID, f"🚨 **درخواست برداشت ({data['wth_method']})**\nکاربر: @{message.from_user.username} (`{message.from_user.id}`)\nاطلاعات:\n{message.text}", parse_mode="Markdown")
-    await message.answer("✅ درخواست برداشت ارسال شد و پس از بررسی واریز خواهد شد.")
+    wth_amount = data['wth_amount']
+    wth_method = data['wth_method']
+
+    # ثبت تراکنش در حالت معلق (کاهش موجودی تا تایید ادمین انجام نمی‌شود)
+    trans_id = db.add_transaction(message.from_user.id, f"Withdraw_{wth_method}", wth_amount, wth_method)
+
+    # ایجاد دکمه‌های تایید (تسویه) یا رد (لغو) برای ادمین
+    markup = types.InlineKeyboardMarkup(inline_keyboard=[[
+        types.InlineKeyboardButton(text="✅ تسویه شد", callback_data=f"wthapp_{trans_id}_{message.from_user.id}_{wth_amount}"),
+        types.InlineKeyboardButton(text="❌ لغو درخواست", callback_data=f"wthrej_{trans_id}_{message.from_user.id}_{wth_amount}")
+    ]])
+
+    admin_msg = (
+        f"🚨 **درخواست برداشت جدید** #{trans_id}\n\n"
+        f"👤 کاربر: @{message.from_user.username} (`{message.from_user.id}`)\n"
+        f"💳 روش برداشت: **{wth_method}**\n"
+        f"💵 مبلغ درخواست: **{wth_amount:,.0f} تومان**\n"
+        f"📌 شماره کارت/آدرس: `{details}`"
+    )
+
+    await bot.send_message(config.ADMIN_ID, admin_msg, reply_markup=markup, parse_mode="Markdown")
+    await message.answer("✅ درخواست برداشت شما ثبت شد.\n⏳ پس از بررسی و تایید مدیریت، مبلغ واریز و تسویه خواهد شد.")
     await state.clear()
+
+# --- کلیک ادمین روی تسویه شد ---
+@dp.callback_query(F.data.startswith("wthapp_"))
+async def approve_withdraw(callback: types.CallbackQuery):
+    _, trans_id, target_uid, amount = callback.data.split("_")
+    target_uid = int(target_uid)
+    amount = float(amount)
+
+    # کسر موجودی کاربر پس از تسویه نهایی
+    db.update_balance(target_uid, -amount)
+    db.update_transaction_status(trans_id, "approved")
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(f"✅ درخواست برداشت #{trans_id} تسویه شد و مبلغ **{amount:,.0f} تومان** از موجودی کاربر کسر گردید.")
+    await bot.send_message(target_uid, f"✅ درخواست برداشت شما به مبلغ **{amount:,.0f} تومان** تسویه و به حساب شما واریز شد.")
+
+# --- کلیک ادمین روی لغو درخواست ---
+@dp.callback_query(F.data.startswith("wthrej_"))
+async def reject_withdraw(callback: types.CallbackQuery):
+    _, trans_id, target_uid, amount = callback.data.split("_")
+    target_uid = int(target_uid)
+    amount = float(amount)
+
+    # موجودی کسر نمی‌شود زیرا قبلا کم نشده بود
+    db.update_transaction_status(trans_id, "rejected")
+
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await callback.message.answer(f"❌ درخواست برداشت #{trans_id} لغو شد.")
+    await bot.send_message(target_uid, f"❌ درخواست برداشت شما به مبلغ **{amount:,.0f} تومان** توسط مدیریت لغو شد و موجودی شما بدون تغییر باقی ماند.")
 
 async def main():
     db.init_db()
