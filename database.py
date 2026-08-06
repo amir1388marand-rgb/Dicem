@@ -1,9 +1,10 @@
-# database.py
 import sqlite3
 from datetime import datetime
 
+DB_NAME = "dice_bot.db"
+
 def init_db():
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
@@ -44,27 +45,39 @@ def init_db():
     conn.close()
 
 def get_user(user_id, username=None, referrer_id=0):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
     user = cursor.fetchone()
-    if not user and username is not None:
-        cursor.execute("INSERT INTO users (user_id, username, referrer_id) VALUES (?, ?, ?)", (user_id, username, referrer_id))
+    
+    if not user:
+        # جلوگیری از ست کردن خود کاربر به عنوان معرف خود
+        final_ref = referrer_id if referrer_id != user_id else 0
+        cursor.execute("INSERT INTO users (user_id, username, referrer_id) VALUES (?, ?, ?)", (user_id, username, final_ref))
         conn.commit()
         cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
         user = cursor.fetchone()
+    elif username and user[1] != username:
+        # بروزرسانی نام‌کاربری در صورت تغییر در تلگرام
+        cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+        conn.commit()
+        # بازخوانی اطلاعات جدید
+        cursor.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+        user = cursor.fetchone()
+        
     conn.close()
     return user
 
 def update_balance(user_id, amount):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
+    # ویرایش موجودی (جلوگیری از منفی شدن آن)
+    cursor.execute("UPDATE users SET balance = MAX(0, balance + ?) WHERE user_id = ?", (amount, user_id))
     conn.commit()
     conn.close()
 
 def update_stats(user_id, is_win):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     if is_win:
         cursor.execute("UPDATE users SET bets_count = bets_count + 1, wins_count = wins_count + 1 WHERE user_id = ?", (user_id,))
@@ -74,7 +87,7 @@ def update_stats(user_id, is_win):
     conn.close()
 
 def add_transaction(user_id, trans_type, amount, currency):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute("INSERT INTO transactions (user_id, type, amount, currency, date) VALUES (?, ?, ?, ?, ?)",
@@ -85,14 +98,14 @@ def add_transaction(user_id, trans_type, amount, currency):
     return trans_id
 
 def update_transaction_status(trans_id, status):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE transactions SET status = ? WHERE id = ?", (status, trans_id))
     conn.commit()
     conn.close()
 
 def log_game(user_id, bet_type, bet_amount, dice_result, is_win, win_amount):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     cursor.execute('''
@@ -103,7 +116,7 @@ def log_game(user_id, bet_type, bet_amount, dice_result, is_win, win_amount):
     conn.close()
 
 def get_referrals_count(user_id):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM users WHERE referrer_id = ?", (user_id,))
     count = cursor.fetchone()[0]
@@ -111,7 +124,7 @@ def get_referrals_count(user_id):
     return count
 
 def get_recent_games(user_id, limit=10):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT bet_type, bet_amount, dice_result, is_win, win_amount, date FROM game_history WHERE user_id = ? ORDER BY id DESC LIMIT ?", (user_id, limit))
     history = cursor.fetchall()
@@ -119,7 +132,7 @@ def get_recent_games(user_id, limit=10):
     return history
 
 def update_last_bonus(user_id, bonus_date_str):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET last_bonus = ? WHERE user_id = ?", (bonus_date_str, user_id))
     conn.commit()
@@ -127,14 +140,14 @@ def update_last_bonus(user_id, bonus_date_str):
 
 # --- توابع ویژه ادمین ---
 def toggle_ban(user_id, status):
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id))
     conn.commit()
     conn.close()
 
 def get_global_stats():
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM users")
     total_users = cursor.fetchone()[0]
@@ -149,7 +162,7 @@ def get_global_stats():
     return total_users, total_balance, total_games, total_bets_sum, total_wins_sum
 
 def get_all_user_ids():
-    conn = sqlite3.connect("dice_bot.db")
+    conn = sqlite3.connect(DB_NAME)
     cursor = conn.cursor()
     cursor.execute("SELECT user_id FROM users WHERE is_banned = 0")
     users = cursor.fetchall()
